@@ -1,0 +1,11 @@
+.git
+.gitignore
+README.txt
+*.sql
+*.zip
+*.bak
+*.tmp
+node_modules
+vendor
+.DS_Store
+Thumbs.db
