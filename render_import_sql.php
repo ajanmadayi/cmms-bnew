@@ -19,33 +19,69 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 require_once __DIR__ . '/config/db.php';
 
-$sql = file_get_contents('php://input');
-if ($sql === false || trim($sql) === '') {
+$tmp = tempnam(sys_get_temp_dir(), 'cmms-import-');
+if ($tmp === false) {
+    http_response_code(500);
+    echo "Could not create temporary file.";
+    exit;
+}
+
+$input = fopen('php://input', 'rb');
+$output = fopen($tmp, 'wb');
+if ($input === false || $output === false) {
+    @unlink($tmp);
+    http_response_code(500);
+    echo "Could not open import stream.";
+    exit;
+}
+
+$bytes = stream_copy_to_stream($input, $output);
+fclose($input);
+fclose($output);
+
+if ($bytes === false || $bytes === 0) {
+    @unlink($tmp);
     http_response_code(400);
     echo "Empty SQL body.";
     exit;
 }
 
-mysqli_set_charset($conn, 'utf8mb4');
-mysqli_query($conn, 'SET FOREIGN_KEY_CHECKS=0');
+$command = [
+    'mysql',
+    '--host=' . $host,
+    '--port=' . $port,
+    '--user=' . $user,
+    '--default-character-set=utf8mb4',
+    '--force',
+    $db,
+];
 
-if (!mysqli_multi_query($conn, $sql)) {
+$descriptors = [
+    0 => ['file', $tmp, 'rb'],
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+];
+
+$process = proc_open($command, $descriptors, $pipes, null, ['MYSQL_PWD' => $pass]);
+if (!is_resource($process)) {
+    @unlink($tmp);
     http_response_code(500);
-    echo "Import failed: " . mysqli_error($conn);
+    echo "Could not start mysql client.";
     exit;
 }
 
-do {
-    if ($result = mysqli_store_result($conn)) {
-        mysqli_free_result($result);
-    }
-} while (mysqli_more_results($conn) && mysqli_next_result($conn));
+$stdout = stream_get_contents($pipes[1]);
+$stderr = stream_get_contents($pipes[2]);
+fclose($pipes[1]);
+fclose($pipes[2]);
 
-if (mysqli_errno($conn)) {
+$exitCode = proc_close($process);
+@unlink($tmp);
+
+if ($exitCode !== 0) {
     http_response_code(500);
-    echo "Import failed: " . mysqli_error($conn);
+    echo "Import failed with exit code " . $exitCode . "\n" . $stderr . "\n" . $stdout;
     exit;
 }
 
-mysqli_query($conn, 'SET FOREIGN_KEY_CHECKS=1');
-echo "Import complete";
+echo "Import complete: " . (int) $bytes . " bytes";
